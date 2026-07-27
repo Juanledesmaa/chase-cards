@@ -9,7 +9,7 @@
   * { box-sizing: border-box; margin: 0; }
   body { background: #111; color: #eee; font: 14px/1.4 system-ui, sans-serif; padding: 12px; }
   .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
-  .bar select, .bar input { background: #1d1d1d; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .bar select, .bar input, .bar button { background: #1d1d1d; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; font: inherit; }
   .bar input[type="number"] { width: 90px; }
   #status { color: #999; }
   #grid { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: 12px; }
@@ -34,78 +34,128 @@
       <option>5</option><option>6</option><option>7</option><option>8</option>
     </select>
   </label>
+  <button id="refresh">Refresh</button>
   <span id="status"></span>
 </div>
 <div id="grid"></div>
 <button id="more" hidden>Load more</button>
 
 <script>
+const API = 'https://mp-search-api.tcgplayer.com/v1/search/request?q=&isList=false';
+// TCGplayer's API has no CORS headers, so browser calls must go through a proxy.
+const PROXY = 'https://corsproxy.io/?url=' + encodeURIComponent(API);
 const PAGE = 48;
 const $ = id => document.getElementById(id);
-let all = [], filtered = [], shown = 0;
+let from = 0, total = 0, gen = 0;
+// Exact filter values discovered from the API's aggregations — TCGplayer
+// silently ignores term filters whose value strings don't match exactly.
+let lineName = null, typeName = null;
 
-function apply() {
-  const set = $('set').value;
-  const min = parseFloat($('min').value), max = parseFloat($('max').value);
-  filtered = all.filter(c =>
-    (!set || c.set === set) &&
-    (isNaN(min) || (c.price != null && c.price >= min)) &&
-    (isNaN(max) || (c.price != null && c.price <= max))
-  );
-  shown = 0;
-  $('grid').innerHTML = '';
-  renderMore();
+async function search(fromIdx, size, term, range) {
+  const filters = { term };
+  if (range) filters.range = range;
+  const res = await fetch(PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      algorithm: 'sales_synonym_v2',
+      from: fromIdx,
+      size,
+      filters,
+      listingSearch: {
+        context: { cart: {} },
+        filters: { term: { sellerStatus: 'Live', channelId: 0 }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } }
+      },
+      context: { cart: {}, shippingCountry: 'US' },
+      settings: { useFuzzySearch: false },
+      sort: { field: 'market-price', order: 'desc' }
+    })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return (await res.json()).results[0];
 }
 
-function renderMore() {
+function term() {
+  const t = { productLineName: [lineName], productTypeName: [typeName] };
+  if ($('set').value) t.setName = [$('set').value];
+  return t;
+}
+
+function priceRange() {
+  const min = parseFloat($('min').value), max = parseFloat($('max').value);
+  if (isNaN(min) && isNaN(max)) return null;
+  const r = {};
+  if (!isNaN(min)) r.gte = min;
+  if (!isNaN(max)) r.lte = max;
+  return { 'market-price': r };
+}
+
+async function load(reset) {
+  const myGen = ++gen;
+  if (reset) { from = 0; $('grid').innerHTML = ''; }
+  $('status').textContent = 'Loading…';
+  try {
+    if (!lineName) {
+      const probe = await search(0, 1, {});
+      if (myGen !== gen) return;
+      const vals = k => (probe.aggregations && probe.aggregations[k] || []).map(a => a.value);
+      lineName = vals('productLineName').find(v => v.toLowerCase().includes('riftbound'));
+      typeName = vals('productTypeName').find(v => v.toLowerCase() === 'cards') || 'Cards';
+      if (!lineName) throw new Error('Riftbound product line not found on TCGplayer');
+    }
+    const data = await search(from, PAGE, term(), priceRange());
+    if (myGen !== gen) return;
+    total = data.totalResults;
+    fillSets(data.aggregations && data.aggregations.setName);
+    render(data.results);
+    from += data.results.length;
+    $('status').textContent = `${Math.min(from, total)} / ${total} cards`;
+    $('more').hidden = from >= total || data.results.length === 0;
+  } catch (e) {
+    if (myGen === gen) $('status').textContent = 'Error: ' + e.message;
+  }
+}
+
+function fillSets(agg) {
+  const sel = $('set');
+  if (!agg || sel.options.length > 1) return;
+  const current = sel.value;
+  agg.sort((a, b) => a.value.localeCompare(b.value)).forEach(s => {
+    const o = document.createElement('option');
+    o.value = o.textContent = s.value;
+    sel.appendChild(o);
+  });
+  sel.value = current;
+}
+
+function render(items) {
   const frag = document.createDocumentFragment();
-  filtered.slice(shown, shown + PAGE).forEach(c => {
+  items.forEach(c => {
     const a = document.createElement('a');
     a.className = 'card';
-    a.href = 'https://www.tcgplayer.com/product/' + c.id;
+    a.href = 'https://www.tcgplayer.com/product/' + c.productId;
     a.target = '_blank';
     a.rel = 'noopener';
-    const price = c.price != null ? '$' + c.price.toFixed(2) : '—';
+    const price = c.marketPrice != null ? '$' + c.marketPrice.toFixed(2) : '—';
     a.innerHTML = `
-      <img loading="lazy" src="https://tcgplayer-cdn.tcgplayer.com/product/${c.id}_in_400x400.jpg" alt="">
+      <img loading="lazy" src="https://tcgplayer-cdn.tcgplayer.com/product/${c.productId}_in_400x400.jpg" alt="">
       <div class="info">
         <div class="name"></div>
         <div class="set"></div>
         <div class="price">${price}</div>
       </div>`;
-    a.querySelector('.name').textContent = c.name;
-    a.querySelector('.set').textContent = c.set;
+    a.querySelector('.name').textContent = c.productName;
+    a.querySelector('.set').textContent = c.setName || '';
     frag.appendChild(a);
   });
   $('grid').appendChild(frag);
-  shown = Math.min(shown + PAGE, filtered.length);
-  $('status').textContent = `${shown} / ${filtered.length} cards`;
-  $('more').hidden = shown >= filtered.length;
 }
 
-async function init() {
-  $('status').textContent = 'Loading…';
-  try {
-    const res = await fetch('cards.json');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    all = data.cards.sort((a, b) => (b.price ?? -1) - (a.price ?? -1));
-    [...new Set(all.map(c => c.set).filter(Boolean))].sort().forEach(s => {
-      const o = document.createElement('option');
-      o.value = o.textContent = s;
-      $('set').appendChild(o);
-    });
-    document.title += ' — prices ' + new Date(data.updated).toLocaleString();
-    apply();
-  } catch (e) {
-    $('status').textContent = 'Error loading cards.json: ' + e.message;
-  }
-}
-
-['set', 'min', 'max'].forEach(id => $(id).addEventListener('change', apply));
+['set', 'min', 'max'].forEach(id => $(id).addEventListener('change', () => load(true)));
 $('cols').addEventListener('change', e => document.documentElement.style.setProperty('--cols', e.target.value));
-$('more').addEventListener('click', renderMore);
-init();
+$('more').addEventListener('click', () => load(false));
+$('refresh').addEventListener('click', () => load(true));
+load(true);
 </script>
 </body>
 </html>
