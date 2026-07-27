@@ -3,7 +3,7 @@
 import { writeFile } from 'node:fs/promises';
 
 const API = 'https://mp-search-api.tcgplayer.com/v1/search/request?q=&isList=false';
-const PAGE = 200;
+const PAGE = 48;
 
 async function fetchPage(from) {
   const res = await fetch(API, {
@@ -19,13 +19,13 @@ async function fetchPage(from) {
       algorithm: 'sales_synonym_v2',
       from,
       size: PAGE,
-      filters: { term: { productLineName: ['riftbound'], productTypeName: ['Cards'] }, range: {} },
+      filters: { term: { productLineName: ['riftbound'], productTypeName: ['Cards'] } },
       listingSearch: {
         context: { cart: {} },
         filters: { term: { sellerStatus: 'Live', channelId: 0 }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } }
       },
       context: { cart: {}, shippingCountry: 'US' },
-      settings: { useFuzzySearch: false, didYouMean: {} },
+      settings: { useFuzzySearch: false },
       sort: { field: 'market-price', order: 'desc' }
     })
   });
