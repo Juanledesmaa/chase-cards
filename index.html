@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riftbound Chase Cards</title>
+<style>
+  :root { --cols: 4; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #111; color: #eee; font: 14px/1.4 system-ui, sans-serif; padding: 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .bar select, .bar input { background: #1d1d1d; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .bar input[type="number"] { width: 90px; }
+  #status { color: #999; }
+  #grid { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: 12px; }
+  .card { display: block; color: inherit; text-decoration: none; background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 8px; overflow: hidden; }
+  .card img { width: 100%; aspect-ratio: 5/7; object-fit: contain; background: #000; display: block; }
+  .card .info { padding: 8px; }
+  .card .name { font-weight: 600; }
+  .card .set { color: #999; font-size: 12px; }
+  .card .price { color: #6fdc8c; font-weight: 700; margin-top: 2px; }
+  #more { margin: 16px auto; display: block; background: #1d1d1d; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 8px 20px; font: inherit; cursor: pointer; }
+  #more[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <select id="set"><option value="">All sets</option></select>
+  <input id="min" type="number" min="0" step="1" placeholder="Min $">
+  <input id="max" type="number" min="0" step="1" placeholder="Max $">
+  <label>Columns
+    <select id="cols">
+      <option>2</option><option>3</option><option selected>4</option>
+      <option>5</option><option>6</option><option>7</option><option>8</option>
+    </select>
+  </label>
+  <span id="status"></span>
+</div>
+<div id="grid"></div>
+<button id="more" hidden>Load more</button>
+
+<script>
+const API = 'https://mp-search-api.tcgplayer.com/v1/search/request?q=&isList=false';
+const PAGE = 48;
+const $ = id => document.getElementById(id);
+let from = 0, total = 0, gen = 0;
+
+function body() {
+  const term = { productLineName: ['riftbound'], productTypeName: ['Cards'] };
+  if ($('set').value) term.setName = [$('set').value];
+  const range = {};
+  const min = parseFloat($('min').value), max = parseFloat($('max').value);
+  if (!isNaN(min) || !isNaN(max)) {
+    range['market-price'] = {};
+    if (!isNaN(min)) range['market-price'].gte = min;
+    if (!isNaN(max)) range['market-price'].lte = max;
+  }
+  return {
+    algorithm: 'sales_synonym_v2',
+    from, size: PAGE,
+    filters: { term, range },
+    listingSearch: {
+      context: { cart: {} },
+      filters: { term: { sellerStatus: 'Live', channelId: 0 }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } }
+    },
+    context: { cart: {}, shippingCountry: 'US' },
+    settings: { useFuzzySearch: false, didYouMean: {} },
+    sort: { field: 'market-price', order: 'desc' }
+  };
+}
+
+async function load(reset) {
+  const myGen = ++gen;
+  if (reset) { from = 0; $('grid').innerHTML = ''; }
+  $('status').textContent = 'Loading…';
+  try {
+    const res = await fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body())
+    });
+    if (myGen !== gen) return;
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = (await res.json()).results[0];
+    total = data.totalResults;
+    fillSets(data.aggregations && data.aggregations.setName);
+    render(data.results);
+    from += data.results.length;
+    $('status').textContent = `${Math.min(from, total)} / ${total} cards`;
+    $('more').hidden = from >= total || data.results.length === 0;
+  } catch (e) {
+    if (myGen === gen) $('status').textContent = 'Error: ' + e.message;
+  }
+}
+
+function fillSets(agg) {
+  const sel = $('set');
+  if (!agg || sel.options.length > 1) return;
+  const current = sel.value;
+  agg.sort((a, b) => a.value.localeCompare(b.value)).forEach(s => {
+    const o = document.createElement('option');
+    o.value = o.textContent = s.value;
+    sel.appendChild(o);
+  });
+  sel.value = current;
+}
+
+function render(items) {
+  const frag = document.createDocumentFragment();
+  items.forEach(c => {
+    const a = document.createElement('a');
+    a.className = 'card';
+    a.href = 'https://www.tcgplayer.com/product/' + c.productId;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    const price = c.marketPrice != null ? '$' + c.marketPrice.toFixed(2) : '—';
+    a.innerHTML = `
+      <img loading="lazy" src="https://tcgplayer-cdn.tcgplayer.com/product/${c.productId}_in_400x400.jpg" alt="">
+      <div class="info">
+        <div class="name"></div>
+        <div class="set"></div>
+        <div class="price">${price}</div>
+      </div>`;
+    a.querySelector('.name').textContent = c.productName;
+    a.querySelector('.set').textContent = c.setName || '';
+    frag.appendChild(a);
+  });
+  $('grid').appendChild(frag);
+}
+
+['set', 'min', 'max'].forEach(id => $(id).addEventListener('change', () => load(true)));
+$('cols').addEventListener('change', e => document.documentElement.style.setProperty('--cols', e.target.value));
+$('more').addEventListener('click', () => load(false));
+load(true);
+</script>
+</body>
+</html>
